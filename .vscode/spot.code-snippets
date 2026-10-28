@@ -1,0 +1,27 @@
+{
+    "SPOT header (Generic)": {
+        "prefix": "spotheader",
+        "description": "SPOT header",
+        "body": [
+            "#",
+            "# Copyright (c) ${CURRENT_YEAR} F. Hoffmann-La Roche Ltd",
+            "# Authors:",
+            "# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>",
+            "#"
+        ]
+    },
+    "SPOT header (YAML)": {
+        "scope": "yaml,dockercompose",
+        "prefix": "spotheader",
+        "description": "YAML-like SPOT header",
+        "body": [
+            "---",
+            "# code: language=yaml",
+            "#",
+            "# Copyright (c) ${CURRENT_YEAR} F. Hoffmann-La Roche Ltd",
+            "# Authors:",
+            "# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>",
+            "#"
+        ]
+    }
+}

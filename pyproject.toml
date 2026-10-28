@@ -1,0 +1,88 @@
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+[build-system]
+requires = ["setuptools>=75", "Cython>=3.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dragonrfc"
+version = "0.1.0"
+description = "Typed Python bindings for the SAP NetWeaver RFC SDK, written in Cython."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Cython",
+  "Programming Language :: Python :: 3",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Typing :: Typed",
+]
+
+[dependency-groups]
+dev = [
+  "cython>=3.1",
+  "mypy>=1.13",
+  "pytest>=8",
+  "ruff>=0.8",
+  "setuptools>=75",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dragonrfc = ["py.typed", "*.pyi"]
+
+[tool.setuptools.exclude-package-data]
+dragonrfc = ["*.pyx", "*.pxd", "*.c"]
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+
+[tool.ruff.format]
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM", "PL", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "PLR2004"]
+"setup.py" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not sap'"
+markers = ["sap: needs the NW RFC SDK and a reachable SAP system"]
+
+[tool.cibuildwheel]
+build = "cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *-win32 *_i686"
+test-groups = ["dev"]
+# Runs per OS and Python version against the installed wheel: unit tests + stubtest.
+test-command = [
+  "pytest {project}/tests/unit",
+  "python -m mypy.stubtest dragonrfc --allowlist {project}/stubtest-allowlist.txt",
+]
+
+[tool.cibuildwheel.linux]
+# The SDK is not redistributable: keep its libraries out of the wheel.
+repair-wheel-command = "auditwheel repair --exclude 'libsapnwrfc.so' --exclude 'libsapucum.so' -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.macos]
+repair-wheel-command = ""

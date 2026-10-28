@@ -1,0 +1,38 @@
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+# Build artifacts
+build/
+dist/
+wheelhouse/
+*.egg-info/
+*.so
+*.pyd
+*.dylib
+*.dll
+*.lib
+
+# Cython output
+src/dragonrfc/*.c
+src/dragonrfc/*.cpp
+src/dragonrfc/*.html
+
+# SAP NW RFC SDK (proprietary, never commit)
+nwrfcsdk/
+sapnwrfc.ini
+dev_rfc*.log
+*.trc
+
+# Environments and caches
+.venv/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

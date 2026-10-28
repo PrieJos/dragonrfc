@@ -1,0 +1,8 @@
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+include src/dragonrfc/*.pyx src/dragonrfc/*.pxd src/dragonrfc/*.pyi src/dragonrfc/py.typed
+exclude src/dragonrfc/*.c

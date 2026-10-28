@@ -1,0 +1,25 @@
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 88
+
+[*.{yml,yaml,toml,json}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.bat]
+end_of_line = crlf

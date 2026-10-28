@@ -1,0 +1,31 @@
+---
+# code: language=yaml
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static:
+    # Needs no SAP SDK: mypy reads the .pyi stubs, the extension is not built.
+    runs-on: ubuntu-latest
+    env:
+      UV_NO_SYNC: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: uv sync --locked --no-install-project
+      - run: task format:check
+      - run: task lint:check
+      - run: task typecheck

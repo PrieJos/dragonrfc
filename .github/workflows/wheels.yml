@@ -1,0 +1,78 @@
+---
+# code: language=yaml
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+name: Wheels
+
+# The SAP NW RFC SDK is proprietary. Each OS job downloads it from a private URL
+# stored in a repository secret (a zip whose top-level folder is `nwrfcsdk/`):
+#   SAPNWRFC_SDK_URL_LINUX, SAPNWRFC_SDK_URL_MACOS, SAPNWRFC_SDK_URL_WINDOWS
+# Jobs are skipped when the secret is not configured.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            sdk: LINUX
+          - os: macos-15-intel # x86_64
+            sdk: MACOS
+          - os: macos-latest # arm64
+            sdk: MACOS
+          - os: windows-latest
+            sdk: WINDOWS
+    runs-on: ${{ matrix.os }}
+    env:
+      SDK_URL: ${{ secrets[format('SAPNWRFC_SDK_URL_{0}', matrix.sdk)] }}
+    steps:
+      - name: Check SDK secret
+        id: sdk
+        shell: bash
+        run: |
+          echo "available=${{ env.SDK_URL != '' }}" >> "$GITHUB_OUTPUT"
+          if [ -z "$SDK_URL" ]; then
+            echo "::warning::SAPNWRFC_SDK_URL_${{ matrix.sdk }} not set: wheels, tests and stubtest skipped"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.sdk.outputs.available == 'true'
+      - name: Fetch SAP NW RFC SDK
+        if: steps.sdk.outputs.available == 'true'
+        shell: bash
+        run: |
+          curl -fsSL "$SDK_URL" -o "$RUNNER_TEMP/nwrfcsdk.zip"
+          unzip -q "$RUNNER_TEMP/nwrfcsdk.zip" -d .
+          test -d nwrfcsdk/include && test -d nwrfcsdk/lib
+      - uses: astral-sh/setup-uv@v6
+        if: steps.sdk.outputs.available == 'true'
+      - uses: arduino/setup-task@v2
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and test wheels
+        if: steps.sdk.outputs.available == 'true'
+        run: task wheels
+        env:
+          # Linux builds run in a container where the project is at /project.
+          CIBW_ENVIRONMENT_LINUX: >-
+            SAPNWRFC_HOME=/project/nwrfcsdk
+            LD_LIBRARY_PATH=/project/nwrfcsdk/lib
+          CIBW_ENVIRONMENT_MACOS: SAPNWRFC_HOME=${{ github.workspace }}/nwrfcsdk
+          CIBW_ENVIRONMENT_WINDOWS: SAPNWRFC_HOME="${{ github.workspace }}\\nwrfcsdk"
+      - uses: actions/upload-artifact@v4
+        if: steps.sdk.outputs.available == 'true'
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl

@@ -1,0 +1,74 @@
+---
+# code: language=yaml
+#
+# Copyright (c) 2026 F. Hoffmann-La Roche Ltd
+# Authors:
+# - ERP Technology Platform Team <glospot_members@msxdl.roche.com>
+#
+
+version: "3"
+
+tasks:
+  setup:
+    desc: Install dependencies and build the extension (needs SAPNWRFC_HOME)
+    cmds:
+      - uv sync --reinstall-package dragonrfc
+
+  format:
+    desc: Format the code
+    cmds:
+      - uv run ruff format .
+
+  format:check:
+    desc: Fail if any file needs formatting (CI)
+    cmds:
+      - uv run ruff format --check .
+
+  lint:
+    desc: Lint and auto-fix
+    cmds:
+      - uv run ruff check . --fix
+
+  lint:check:
+    desc: Lint without fixing (CI)
+    cmds:
+      - uv run ruff check .
+
+  typecheck:
+    desc: Static type check (strict)
+    cmds:
+      - uv run mypy
+
+  stubtest:
+    desc: Check that the .pyi stubs match the compiled extension
+    cmds:
+      - uv run python -m mypy.stubtest dragonrfc --allowlist stubtest-allowlist.txt
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - uv run pytest
+
+  test:sap:
+    desc: Run integration tests against a real SAP system
+    cmds:
+      - uv run pytest -m sap
+
+  build:
+    desc: Build sdist and wheel
+    cmds:
+      - uv build
+
+  wheels:
+    desc: Build and test platform wheels with cibuildwheel (needs SAPNWRFC_HOME)
+    cmds:
+      - uvx cibuildwheel==3.* --output-dir wheelhouse
+
+  check:
+    desc: Everything CI runs
+    cmds:
+      - task: format
+      - task: lint
+      - task: typecheck
+      - task: stubtest
+      - task: test
