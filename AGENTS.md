@@ -239,7 +239,7 @@ indent-style = "space"
 docstring-code-format = true
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM", "PL", "RUF"]
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM", "PL", "RUF", "COM812"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

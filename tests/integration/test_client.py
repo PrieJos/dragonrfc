@@ -150,7 +150,7 @@ def test_prefetch(params: dict[str, str]) -> None:
         assert set(failures) == {"Z_DRAGONRFC_DOES_NOT_EXIST"}
         repo = conn.repository
         assert repo.describe_function("STFC_CONNECTION") == conn.describe_function(
-            "STFC_CONNECTION"
+            "STFC_CONNECTION",
         )
         assert repo.describe_type("RFCTEST") == conn.describe_type("RFCTEST")
 

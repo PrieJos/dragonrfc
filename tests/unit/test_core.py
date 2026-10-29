@@ -191,7 +191,11 @@ def test_connection_parameter_validation() -> None:
 def test_unreachable_host_raises_communication_error() -> None:
     with pytest.raises(dragonrfc.RFCCommunicationError):
         dragonrfc.RFCClient(
-            ashost="127.0.0.1", sysnr="99", client="000", user="u", passwd="p"
+            ashost="127.0.0.1",
+            sysnr="99",
+            client="000",
+            user="u",
+            passwd="p",
         )
 
 
@@ -243,7 +247,7 @@ def test_describe_texts_and_exceptions() -> None:
     assert (struct.optional, struct.text, struct.default) == (False, "", "")
     assert (table.optional, table.text, table.default) == (True, "Test lines", "SPACE")
     assert [(e.key, e.message) for e in meta.exceptions] == [
-        ("ZDRAGONRFC_FAILED", "Test failure")
+        ("ZDRAGONRFC_FAILED", "Test failure"),
     ]
 
 

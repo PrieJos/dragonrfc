@@ -48,7 +48,8 @@ RFCValue: TypeAlias = (
 )
 
 def _roundtrip(
-    fields: list[tuple[str, int, int, int, int]], values: dict[str, object]
+    fields: list[tuple[str, int, int, int, int]],
+    values: dict[str, object],
 ) -> dict[str, RFCValue]:
     """Sets values into a locally defined function and reads them back.
 
@@ -72,7 +73,8 @@ def _describe_test(
     """
 
 def _add_test_repository(
-    sysid: str, fields: list[tuple[str, int, int, int, int]]
+    sysid: str,
+    fields: list[tuple[str, int, int, int, int]],
 ) -> None:
     """Adds the ``_roundtrip`` function and its line type to ``sysid``'s cache.
 
