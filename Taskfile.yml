@@ -61,8 +61,16 @@ tasks:
 
   wheels:
     desc: Build and test platform wheels with cibuildwheel (needs SAPNWRFC_HOME)
+    preconditions:
+      - sh: test -d nwrfcsdk || test -n "$SAPNWRFC_HOME"
+        msg: Set SAPNWRFC_HOME (or provide ./nwrfcsdk) so the SDK can reach the build container.
     cmds:
-      - uvx cibuildwheel==3.* --output-dir wheelhouse
+      # Linux builds run in a container that only sees the project at /project,
+      # so stage the SDK there (gitignored) as CI does. macOS builds on the host.
+      - |
+        [ "$(uname -s)" != Linux ] || test -d nwrfcsdk || cp -r "$SAPNWRFC_HOME" nwrfcsdk
+        export CIBW_ENVIRONMENT_LINUX="${CIBW_ENVIRONMENT_LINUX:-SAPNWRFC_HOME=/project/nwrfcsdk LD_LIBRARY_PATH=/project/nwrfcsdk/lib}"
+        uvx cibuildwheel==3.* --output-dir wheelhouse
 
   check:
     desc: Everything CI runs

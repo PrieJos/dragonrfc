@@ -81,8 +81,15 @@ test-command = [
 ]
 
 [tool.cibuildwheel.linux]
+# libsapnwrfc.so needs GLIBCXX_3.4.26; manylinux_2_28's libstdc++ is too old to load it.
+manylinux-x86_64-image = "manylinux_2_34"
+manylinux-aarch64-image = "manylinux_2_34"
 # The SDK is not redistributable: keep its libraries out of the wheel.
-repair-wheel-command = "auditwheel repair --exclude 'libsapnwrfc.so' --exclude 'libsapucum.so' -w {dest_dir} {wheel}"
+repair-wheel-command = "auditwheel repair --plat manylinux_2_34_x86_64 --only-plat --exclude 'libsapnwrfc.so' --exclude 'libsapucum.so' -w {dest_dir} {wheel}"
+
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_aarch64"
+repair-wheel-command = "auditwheel repair --plat manylinux_2_34_aarch64 --only-plat --exclude 'libsapnwrfc.so' --exclude 'libsapucum.so' -w {dest_dir} {wheel}"
 
 [tool.cibuildwheel.macos]
 repair-wheel-command = ""
