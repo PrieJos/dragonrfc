@@ -30,7 +30,7 @@ Guidance for AI coding agents working on `dragonrfc`.
 - Record what you checked and decided (supported, deferred, not feasible, with the
   reason) in `docs/sdk-features.md`, so the decision is not repeated.
 - Never invent SDK behavior from PyRFC or memory. Verify against the SDK headers and
-  the official documentation.
+  the official documentation. See [References](#references) for sources, in order.
 
 ## Non-negotiable foundations
 
@@ -138,6 +138,26 @@ Keep the public API small. Underscore-prefixed modules are private.
   Provide context managers and `close()`, and release in `__dealloc__` as a backstop.
 - Release the GIL (`with nogil`) around blocking network calls, and only touch Python
   objects with it held.
+
+### References
+
+Consult in this order:
+
+1. **Local SDK (authoritative).** Headers in `$SAPNWRFC_HOME/include` (`sapnwrfc.h`,
+   `sapucx.h`) and the programming guide and release notes in `$SAPNWRFC_HOME/doc`.
+   Read them in place; never copy them into the repo (not redistributable).
+2. **Official SAP sources.** The notes need an S-user login, so agents may not be able
+   to fetch them.
+   - [SAP NetWeaver RFC SDK landing page](https://support.sap.com/en/product/connectors/nwrfcsdk.html)
+   - SAP Note 2573790: installation, support and availability of the NW RFC SDK.
+   - SAP Note 2573881: NW RFC SDK release notes (check for features added since PyRFC).
+3. **Inspiration only:** [SAP-archive/PyRFC](https://github.com/SAP-archive/PyRFC).
+   Read it to see which SDK features matter and how users use them. It is never a
+   source of SDK behavior and never a code source (see
+   [PyRFC is inspiration only](#pyrfc-is-inspiration-only)).
+4. Record findings in `docs/sdk-features.md`.
+
+Do not add other URLs without the user's approval.
 
 ## Commands
 
