@@ -14,15 +14,19 @@ and optionally ``DRAGONRFC_SNC_MYNAME``, ``DRAGONRFC_SNC_LIB`` and
 API:
     - ``params`` / ``conn`` fixtures: logon parameters and an open connection.
     - Tests for open/ping/close, SNC logon, logon errors, scalar and structure calls,
-      ABAP exceptions, metadata lookups, cache eviction, batch prefetch and
-      repository save/load.
+      ABAP exceptions, metadata lookups, cache eviction, batch prefetch,
+      repository save/load, threads sharing a client, and ``AsyncRFCClient``
+      overlap and cancellation (needs ``RFC_PING_AND_WAIT`` in the system).
 
 Example:
     $ DRAGONRFC_ASHOST=... task test:sap
 """
 
+import asyncio
 import os
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -167,3 +171,48 @@ def test_repository_save_and_load(conn: dragonrfc.RFCClient, tmp_path: Path) -> 
         (p.name, p.type, p.direction) for p in before.parameters
     ]
     assert conn.call("STFC_CONNECTION", REQUTEXT="x")["ECHOTEXT"] == "x"
+
+
+def test_threads_share_one_client(conn: dragonrfc.RFCClient) -> None:
+    def echo(i: int) -> object:
+        return conn.call("STFC_CONNECTION", REQUTEXT=str(i))["ECHOTEXT"]
+
+    with ThreadPoolExecutor(4) as pool:
+        assert list(pool.map(echo, range(20))) == [str(i) for i in range(20)]
+
+
+def test_async_calls_on_separate_clients_overlap(params: dict[str, str]) -> None:
+    async def main() -> float:
+        conns = await asyncio.gather(
+            *(dragonrfc.AsyncRFCClient.open(**params) for _ in range(4)),
+        )
+        try:
+            start = time.monotonic()
+            await asyncio.gather(
+                *(c.call("RFC_PING_AND_WAIT", SECONDS=2) for c in conns),
+            )
+            return time.monotonic() - start
+        finally:
+            await asyncio.gather(*(c.close() for c in conns))
+
+    # Four 2 s calls one after another would take 8 s.
+    assert asyncio.run(main()) < 6
+
+
+def test_cancel_aborts_a_running_call(params: dict[str, str]) -> None:
+    async def main() -> None:
+        conn = await dragonrfc.AsyncRFCClient.open(**params)
+        task = asyncio.create_task(conn.call("RFC_PING_AND_WAIT", SECONDS=10))
+        await asyncio.sleep(1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not conn.alive
+        # The aborted call must have released the client well before its 10 s.
+        start = time.monotonic()
+        with pytest.raises(dragonrfc.RFCError):
+            await conn.ping()
+        assert time.monotonic() - start < 5
+        await conn.close()
+
+    asyncio.run(main())

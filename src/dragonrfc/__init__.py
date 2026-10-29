@@ -10,8 +10,9 @@ or make its ``lib/`` directory findable by the dynamic loader (Linux, macOS).
 
 API:
     - :class:`RFCClient`: client connection; ``ping``, ``call``, ``close``,
-      ``describe_function``, ``describe_type``, ``prefetch``, ``repository``,
-      ``evict_function``, ``evict_type``.
+      ``cancel``, ``describe_function``, ``describe_type``, ``prefetch``,
+      ``repository``, ``evict_function``, ``evict_type``.
+    - :class:`AsyncRFCClient`: asyncio counterpart of :class:`RFCClient`.
     - :class:`Repository`: SDK metadata cache of one system; cache-only
       lookups, eviction, ``clear``, ``save`` and ``load`` (JSON file).
     - :class:`FunctionMetadata` and related dataclasses, :class:`ABAPType`,
@@ -36,6 +37,7 @@ if sys.platform == "win32" and "SAPNWRFC_HOME" in os.environ:
     _dll_dir = os.add_dll_directory(os.path.join(os.environ["SAPNWRFC_HOME"], "lib"))
 
 from dragonrfc._core import Repository, RFCClient, sdk_version
+from dragonrfc.aio import AsyncRFCClient
 from dragonrfc.exceptions import (
     ErrorGroup,
     ReturnCode,
@@ -65,6 +67,7 @@ __version__ = version("dragonrfc")
 
 __all__ = [
     "ABAPType",
+    "AsyncRFCClient",
     "Direction",
     "ErrorGroup",
     "ExceptionMetadata",

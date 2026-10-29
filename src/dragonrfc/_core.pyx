@@ -12,7 +12,7 @@ boundary only. Every failing SDK call raises the matching
 
 API:
     - :class:`RFCClient`: open on construction; ``ping``, ``call``, ``close``,
-      ``alive``, ``describe_function``, ``describe_type``, ``prefetch``,
+      ``cancel``, ``alive``, ``describe_function``, ``describe_type``, ``prefetch``,
       ``repository``, ``evict_function``, ``evict_type``; usable as a context
       manager.
     - :class:`Repository`: the SDK metadata cache of one system ID; cache-only
@@ -31,6 +31,7 @@ Example:
 import datetime
 import os
 import sys
+import threading
 from decimal import Decimal
 
 from cpython.mem cimport PyMem_Free, PyMem_Malloc
@@ -105,6 +106,87 @@ cdef inline int _check(RFC_RC rc, RFC_ERROR_INFO* info) except -1:
     return 0
 
 
+# --- Field layouts ---------------------------------------------------------
+
+cdef class _Layout:
+    """Field descriptors of one structure type, read once and reused per row.
+
+    Rows of a table share one layout, so the SDK is asked for each field
+    descriptor and name once per call instead of once per row.
+    """
+
+    cdef RFC_TYPE_DESC_HANDLE type_desc
+    cdef RFC_FIELD_DESC* fields
+    cdef unsigned count
+    cdef list names
+    cdef list children
+    cdef dict indexes
+
+    def __dealloc__(self):
+        PyMem_Free(self.fields)
+
+    cdef _Layout nested(self, unsigned index):
+        """Returns the layout of a structure or table field, else ``None``."""
+        cdef _Layout layout
+        if not _is_container(self.fields[index].type):
+            return None
+        layout = self.children[index]
+        if layout is None:
+            layout = _layout(self.fields[index].typeDescHandle)
+            self.children[index] = layout
+        return layout
+
+    cdef Py_ssize_t find(self, str key) except -1:
+        """Returns the index of the field named ``key``."""
+        cdef RFC_ERROR_INFO info
+        cdef RFC_FIELD_DESC field
+        cdef bytes name
+        index = self.indexes.get(key)
+        if index is None:
+            # The SDK resolves the name, so it decides what matches and fails.
+            name = _to_uc(key)
+            _check(
+                RfcGetFieldDescByName(self.type_desc, _ptr(name), &field, &info),
+                &info,
+            )
+            index = self.names.index(_from_ucz(field.name))
+            self.indexes[key] = index
+        return index
+
+
+cdef inline bint _is_container(RFCTYPE kind) noexcept:
+    return kind == RFCTYPE_STRUCTURE or kind == RFCTYPE_TABLE
+
+
+cdef _Layout _layout(RFC_TYPE_DESC_HANDLE type_desc):
+    cdef RFC_ERROR_INFO info
+    cdef _Layout layout = _Layout.__new__(_Layout)
+    cdef unsigned index
+    layout.type_desc = type_desc
+    _check(RfcGetFieldCount(type_desc, &layout.count, &info), &info)
+    layout.fields = <RFC_FIELD_DESC*>PyMem_Malloc(
+        (layout.count or 1) * sizeof(RFC_FIELD_DESC)
+    )
+    if layout.fields == NULL:
+        raise MemoryError()
+    layout.names = []
+    for index in range(layout.count):
+        _check(
+            RfcGetFieldDescByIndex(type_desc, index, &layout.fields[index], &info),
+            &info,
+        )
+        layout.names.append(_from_ucz(layout.fields[index].name))
+    layout.children = [None] * layout.count
+    layout.indexes = {}
+    return layout
+
+
+cdef _Layout _param_layout(RFC_PARAMETER_DESC* param):
+    if _is_container(param.type):
+        return _layout(param.typeDescHandle)
+    return None
+
+
 # --- Python -> SDK ---------------------------------------------------------
 
 cdef str _to_text(RFCTYPE kind, object value):
@@ -127,9 +209,9 @@ cdef str _to_text(RFCTYPE kind, object value):
 
 cdef int _set_value(
     DATA_CONTAINER_HANDLE handle,
-    const SAP_UC* name,
+    unsigned index,
     RFCTYPE kind,
-    RFC_TYPE_DESC_HANDLE type_desc,
+    _Layout nested,
     object value,
 ) except -1:
     cdef RFC_ERROR_INFO info
@@ -139,39 +221,41 @@ cdef int _set_value(
     cdef const unsigned char[:] raw
 
     if kind == RFCTYPE_STRUCTURE:
-        _check(RfcGetStructure(handle, name, &child, &info), &info)
-        _fill_structure(child, type_desc, value)
+        _check(RfcGetStructureByIndex(handle, index, &child, &info), &info)
+        _fill_structure(child, nested, value)
     elif kind == RFCTYPE_TABLE:
-        _check(RfcGetTable(handle, name, &child, &info), &info)
+        _check(RfcGetTableByIndex(handle, index, &child, &info), &info)
         for row in value:
             line = RfcAppendNewRow(child, &info)
             if line == NULL:
                 raise _error(&info)
-            _fill_structure(line, type_desc, row)
+            _fill_structure(line, nested, row)
     elif kind == RFCTYPE_INT:
-        _check(RfcSetInt(handle, name, _as_int(value), &info), &info)
+        _check(RfcSetIntByIndex(handle, index, _as_int(value), &info), &info)
     elif kind == RFCTYPE_INT1:
-        _check(RfcSetInt1(handle, name, _as_int(value), &info), &info)
+        _check(RfcSetInt1ByIndex(handle, index, _as_int(value), &info), &info)
     elif kind == RFCTYPE_INT2:
-        _check(RfcSetInt2(handle, name, _as_int(value), &info), &info)
+        _check(RfcSetInt2ByIndex(handle, index, _as_int(value), &info), &info)
     elif kind == RFCTYPE_INT8:
-        _check(RfcSetInt8(handle, name, _as_int(value), &info), &info)
+        _check(RfcSetInt8ByIndex(handle, index, _as_int(value), &info), &info)
     elif kind == RFCTYPE_FLOAT:
         if not isinstance(value, (int, float)):
             raise TypeError(f"expected float, got {type(value).__name__}")
-        _check(RfcSetFloat(handle, name, value, &info), &info)
+        _check(RfcSetFloatByIndex(handle, index, value, &info), &info)
     elif kind in (RFCTYPE_BYTE, RFCTYPE_XSTRING):
         if not isinstance(value, (bytes, bytearray)):
             raise TypeError(f"expected bytes, got {type(value).__name__}")
         raw = bytes(value)
-        _set_raw(handle, name, kind, &raw[0] if len(raw) else NULL, len(raw))
+        _set_raw(handle, index, kind, &raw[0] if len(raw) else NULL, len(raw))
     elif kind in (
         RFCTYPE_CHAR, RFCTYPE_NUM, RFCTYPE_STRING, RFCTYPE_DATE, RFCTYPE_TIME,
         RFCTYPE_BCD, RFCTYPE_DECF16, RFCTYPE_DECF34, RFCTYPE_UTCLONG,
     ):
         text = _to_uc(_to_text(kind, value))
         _check(
-            RfcSetString(handle, name, _ptr(text), len(text) // 2 - 1, &info),
+            RfcSetStringByIndex(
+                handle, index, _ptr(text), len(text) // 2 - 1, &info
+            ),
             &info,
         )
     else:
@@ -187,7 +271,7 @@ cdef object _as_int(object value):
 
 cdef int _set_raw(
     DATA_CONTAINER_HANDLE handle,
-    const SAP_UC* name,
+    unsigned index,
     RFCTYPE kind,
     const SAP_RAW* data,
     unsigned length,
@@ -197,33 +281,34 @@ cdef int _set_raw(
     if data == NULL:
         data = &empty
     if kind == RFCTYPE_BYTE:
-        _check(RfcSetBytes(handle, name, data, length, &info), &info)
+        _check(RfcSetBytesByIndex(handle, index, data, length, &info), &info)
     else:
-        _check(RfcSetXString(handle, name, data, length, &info), &info)
+        _check(RfcSetXStringByIndex(handle, index, data, length, &info), &info)
     return 0
 
 
 cdef int _fill_structure(
-    RFC_STRUCTURE_HANDLE handle, RFC_TYPE_DESC_HANDLE type_desc, object values
+    RFC_STRUCTURE_HANDLE handle, _Layout layout, object values
 ) except -1:
-    cdef RFC_ERROR_INFO info
-    cdef RFC_FIELD_DESC field
-    cdef bytes name
+    cdef Py_ssize_t index
     for key, value in values.items():
-        name = _to_uc(key)
-        _check(RfcGetFieldDescByName(type_desc, _ptr(name), &field, &info), &info)
-        _set_value(handle, field.name, field.type, field.typeDescHandle, value)
+        index = layout.find(key)
+        _set_value(
+            handle, index, layout.fields[index].type, layout.nested(index), value
+        )
     return 0
 
 
 # --- SDK -> Python ---------------------------------------------------------
 
-cdef str _get_text(DATA_CONTAINER_HANDLE handle, const SAP_UC* name):
+cdef str _get_text(DATA_CONTAINER_HANDLE handle, unsigned index):
     cdef RFC_ERROR_INFO info
     cdef SAP_UC small[256]
     cdef SAP_UC* buffer
     cdef unsigned length = 0
-    cdef RFC_RC rc = RfcGetString(handle, name, small, _TEXT_BUFFER, &length, &info)
+    cdef RFC_RC rc = RfcGetStringByIndex(
+        handle, index, small, _TEXT_BUFFER, &length, &info
+    )
     if rc == RFC_OK:
         return _from_uc(small, length)
     if rc != RFC_BUFFER_TOO_SMALL:
@@ -233,19 +318,20 @@ cdef str _get_text(DATA_CONTAINER_HANDLE handle, const SAP_UC* name):
         raise MemoryError()
     try:
         _check(
-            RfcGetString(handle, name, buffer, length + 1, &length, &info), &info
+            RfcGetStringByIndex(handle, index, buffer, length + 1, &length, &info),
+            &info,
         )
         return _from_uc(buffer, length)
     finally:
         PyMem_Free(buffer)
 
 
-cdef bytes _get_xstring(DATA_CONTAINER_HANDLE handle, const SAP_UC* name):
+cdef bytes _get_xstring(DATA_CONTAINER_HANDLE handle, unsigned index):
     cdef RFC_ERROR_INFO info
     cdef SAP_RAW probe
     cdef SAP_RAW* buffer
     cdef unsigned length = 0
-    cdef RFC_RC rc = RfcGetXString(handle, name, &probe, 0, &length, &info)
+    cdef RFC_RC rc = RfcGetXStringByIndex(handle, index, &probe, 0, &length, &info)
     if rc == RFC_OK:
         return b""
     if rc != RFC_BUFFER_TOO_SMALL:
@@ -254,21 +340,24 @@ cdef bytes _get_xstring(DATA_CONTAINER_HANDLE handle, const SAP_UC* name):
     if buffer == NULL:
         raise MemoryError()
     try:
-        _check(RfcGetXString(handle, name, buffer, length, &length, &info), &info)
+        _check(
+            RfcGetXStringByIndex(handle, index, buffer, length, &length, &info),
+            &info,
+        )
         return buffer[:length]
     finally:
         PyMem_Free(buffer)
 
 
 cdef bytes _get_bytes(
-    DATA_CONTAINER_HANDLE handle, const SAP_UC* name, unsigned length
+    DATA_CONTAINER_HANDLE handle, unsigned index, unsigned length
 ):
     cdef RFC_ERROR_INFO info
     cdef SAP_RAW* buffer = <SAP_RAW*>PyMem_Malloc(length or 1)
     if buffer == NULL:
         raise MemoryError()
     try:
-        _check(RfcGetBytes(handle, name, buffer, length, &info), &info)
+        _check(RfcGetBytesByIndex(handle, index, buffer, length, &info), &info)
         return buffer[:length]
     finally:
         PyMem_Free(buffer)
@@ -288,10 +377,10 @@ cdef object _parse_time(str text):
 
 cdef object _get_value(
     DATA_CONTAINER_HANDLE handle,
-    const SAP_UC* name,
+    unsigned index,
     RFCTYPE kind,
-    RFC_TYPE_DESC_HANDLE type_desc,
     unsigned uc_length,
+    _Layout nested,
 ):
     cdef RFC_ERROR_INFO info
     cdef RFC_STRUCTURE_HANDLE child
@@ -302,61 +391,57 @@ cdef object _get_value(
     cdef RFC_FLOAT float_value
 
     if kind == RFCTYPE_STRUCTURE:
-        _check(RfcGetStructure(handle, name, &child, &info), &info)
-        return _read_structure(child, type_desc)
+        _check(RfcGetStructureByIndex(handle, index, &child, &info), &info)
+        return _read_structure(child, nested)
     if kind == RFCTYPE_TABLE:
-        _check(RfcGetTable(handle, name, &child, &info), &info)
-        return _read_table(child, type_desc)
+        _check(RfcGetTableByIndex(handle, index, &child, &info), &info)
+        return _read_table(child, nested)
     if kind == RFCTYPE_INT:
-        _check(RfcGetInt(handle, name, &int_value, &info), &info)
+        _check(RfcGetIntByIndex(handle, index, &int_value, &info), &info)
         return int_value
     if kind == RFCTYPE_INT1:
-        _check(RfcGetInt1(handle, name, &int1_value, &info), &info)
+        _check(RfcGetInt1ByIndex(handle, index, &int1_value, &info), &info)
         return int1_value
     if kind == RFCTYPE_INT2:
-        _check(RfcGetInt2(handle, name, &int2_value, &info), &info)
+        _check(RfcGetInt2ByIndex(handle, index, &int2_value, &info), &info)
         return int2_value
     if kind == RFCTYPE_INT8:
-        _check(RfcGetInt8(handle, name, &int8_value, &info), &info)
+        _check(RfcGetInt8ByIndex(handle, index, &int8_value, &info), &info)
         return int8_value
     if kind == RFCTYPE_FLOAT:
-        _check(RfcGetFloat(handle, name, &float_value, &info), &info)
+        _check(RfcGetFloatByIndex(handle, index, &float_value, &info), &info)
         return float_value
     if kind == RFCTYPE_BYTE:
-        return _get_bytes(handle, name, uc_length)
+        return _get_bytes(handle, index, uc_length)
     if kind == RFCTYPE_XSTRING:
-        return _get_xstring(handle, name)
+        return _get_xstring(handle, index)
     if kind == RFCTYPE_CHAR:
         # ABAP CHAR is blank padded; trailing blanks carry no meaning.
-        return _get_text(handle, name).rstrip()
+        return _get_text(handle, index).rstrip()
     if kind in (RFCTYPE_NUM, RFCTYPE_STRING, RFCTYPE_UTCLONG):
-        return _get_text(handle, name)
+        return _get_text(handle, index)
     if kind == RFCTYPE_DATE:
-        return _parse_date(_get_text(handle, name))
+        return _parse_date(_get_text(handle, index))
     if kind == RFCTYPE_TIME:
-        return _parse_time(_get_text(handle, name))
+        return _parse_time(_get_text(handle, index))
     if kind in (RFCTYPE_BCD, RFCTYPE_DECF16, RFCTYPE_DECF34):
-        return Decimal(_get_text(handle, name))
+        return Decimal(_get_text(handle, index))
     raise TypeError(f"ABAP type {kind} is not supported yet")
 
 
-cdef dict _read_structure(
-    RFC_STRUCTURE_HANDLE handle, RFC_TYPE_DESC_HANDLE type_desc
-):
-    cdef RFC_ERROR_INFO info
-    cdef RFC_FIELD_DESC field
-    cdef unsigned count, index
+cdef dict _read_structure(RFC_STRUCTURE_HANDLE handle, _Layout layout):
+    cdef RFC_FIELD_DESC* field
+    cdef unsigned index
     cdef dict result = {}
-    _check(RfcGetFieldCount(type_desc, &count, &info), &info)
-    for index in range(count):
-        _check(RfcGetFieldDescByIndex(type_desc, index, &field, &info), &info)
-        result[_from_ucz(field.name)] = _get_value(
-            handle, field.name, field.type, field.typeDescHandle, field.ucLength
+    for index in range(layout.count):
+        field = &layout.fields[index]
+        result[layout.names[index]] = _get_value(
+            handle, index, field.type, field.ucLength, layout.nested(index)
         )
     return result
 
 
-cdef list _read_table(RFC_TABLE_HANDLE handle, RFC_TYPE_DESC_HANDLE type_desc):
+cdef list _read_table(RFC_TABLE_HANDLE handle, _Layout layout):
     cdef RFC_ERROR_INFO info
     cdef RFC_STRUCTURE_HANDLE row
     cdef unsigned count, index
@@ -367,7 +452,7 @@ cdef list _read_table(RFC_TABLE_HANDLE handle, RFC_TYPE_DESC_HANDLE type_desc):
         row = RfcGetCurrentRow(handle, &info)
         if row == NULL:
             raise _error(&info)
-        rows.append(_read_structure(row, type_desc))
+        rows.append(_read_structure(row, layout))
     return rows
 
 
@@ -670,6 +755,10 @@ cdef class RFCClient:
     The connection is opened on construction and closed by :meth:`close`, by
     leaving a ``with`` block, or, as a last resort, when the object is collected.
 
+    A client can be shared between threads: calls on it run one at a time,
+    each with the GIL released while it waits on the network. Open one client
+    per thread to run calls in parallel.
+
     Example:
         >>> with RFCClient(ashost="host", sysnr="00", client="100",
         ...                 user="me", passwd="secret") as conn:
@@ -678,6 +767,16 @@ cdef class RFCClient:
     """
 
     cdef RFC_CONNECTION_HANDLE _handle
+    # The SDK forbids using one handle from two threads at once (Programming
+    # Guide 4.2.1): _lock serializes every use. _cancel_lock only guards reading
+    # and clearing _handle, so cancel() and alive never wait for a running call;
+    # both are meant to run beside it (alive only looks the handle up).
+    cdef object _lock
+    cdef object _cancel_lock
+
+    def __cinit__(self):
+        self._lock = threading.Lock()
+        self._cancel_lock = threading.Lock()
 
     def __init__(self, **params):
         """Opens the connection.
@@ -736,7 +835,8 @@ cdef class RFCClient:
         cdef RFC_ERROR_INFO info
         if self._handle != NULL:
             # Backstop only: no way to report a failure from a finalizer.
-            RfcCloseConnection(self._handle, &info)
+            with nogil:
+                RfcCloseConnection(self._handle, &info)
             self._handle = NULL
 
     def __enter__(self):
@@ -755,13 +855,14 @@ cdef class RFCClient:
         """Whether the connection handle is open and valid."""
         cdef RFC_ERROR_INFO info
         cdef int valid = 0
-        if self._handle == NULL:
-            return False
-        # A failing check means the handle is invalid, which is the answer.
-        return (
-            RfcIsConnectionHandleValid(self._handle, &valid, &info) == RFC_OK
-            and valid != 0
-        )
+        with self._cancel_lock:
+            if self._handle == NULL:
+                return False
+            # A failing check means the handle is invalid, which is the answer.
+            return (
+                RfcIsConnectionHandleValid(self._handle, &valid, &info) == RFC_OK
+                and valid != 0
+            )
 
     def close(self):
         """Closes the connection. Calling it again has no effect.
@@ -771,13 +872,36 @@ cdef class RFCClient:
         """
         cdef RFC_ERROR_INFO info
         cdef RFC_RC rc
-        cdef RFC_CONNECTION_HANDLE handle = self._handle
-        if handle == NULL:
-            return
-        self._handle = NULL
-        with nogil:
-            rc = RfcCloseConnection(handle, &info)
+        cdef RFC_CONNECTION_HANDLE handle
+        with self._lock:
+            with self._cancel_lock:
+                handle = self._handle
+                self._handle = NULL
+            if handle == NULL:
+                return
+            with nogil:
+                rc = RfcCloseConnection(handle, &info)
         _check(rc, &info)
+
+    def cancel(self):
+        """Aborts the call that another thread is running on this connection.
+
+        The SDK closes the connection together with the call: the aborted call
+        raises an :class:`RFCError` and the client is closed afterwards. Does
+        nothing when the connection is closed or no call is waiting on the
+        network. Safe to call from any thread at any time.
+        """
+        cdef RFC_ERROR_INFO info
+        cdef RFC_RC rc
+        with self._cancel_lock:
+            if self._handle == NULL:
+                return
+            with nogil:
+                rc = RfcCancel(self._handle, &info)
+            # RFC_ILLEGAL_STATE means no call was running: nothing to abort.
+            if rc == RFC_OK:
+                # RfcCancel closed the connection; closing it again is wrong.
+                self._handle = NULL
 
     def ping(self):
         """Sends a ping to the SAP system.
@@ -788,8 +912,9 @@ cdef class RFCClient:
         """
         cdef RFC_ERROR_INFO info
         cdef RFC_RC rc
-        with nogil:
-            rc = RfcPing(self._handle, &info)
+        with self._lock:
+            with nogil:
+                rc = RfcPing(self._handle, &info)
         _check(rc, &info)
 
     def call(self, str name, **params):
@@ -817,8 +942,11 @@ cdef class RFCClient:
         cdef bytes buffer = _to_uc(name)
         cdef const SAP_UC* cname = _ptr(buffer)
 
-        with nogil:
-            desc = RfcGetFunctionDesc(self._handle, cname, &info)
+        # Lock only the handle: the function container belongs to this call, so
+        # another thread's call can use the connection while this one converts.
+        with self._lock:
+            with nogil:
+                desc = RfcGetFunctionDesc(self._handle, cname, &info)
         if desc == NULL:
             raise _error(&info)
         func = RfcCreateFunction(desc, &info)
@@ -826,8 +954,9 @@ cdef class RFCClient:
             raise _error(&info)
         try:
             _set_params(desc, func, params)
-            with nogil:
-                rc = RfcInvoke(self._handle, func, &info)
+            with self._lock:
+                with nogil:
+                    rc = RfcInvoke(self._handle, func, &info)
             _check(rc, &info)
             result = _get_results(desc, func)
         except BaseException:
@@ -858,8 +987,9 @@ cdef class RFCClient:
         cdef RFC_FUNCTION_DESC_HANDLE desc
         cdef bytes buffer = _to_uc(name)
         cdef const SAP_UC* cname = _ptr(buffer)
-        with nogil:
-            desc = RfcGetFunctionDesc(self._handle, cname, &info)
+        with self._lock:
+            with nogil:
+                desc = RfcGetFunctionDesc(self._handle, cname, &info)
         if desc == NULL:
             raise _error(&info)
         return _describe_function(desc)
@@ -882,8 +1012,9 @@ cdef class RFCClient:
         cdef RFC_TYPE_DESC_HANDLE type_desc
         cdef bytes buffer = _to_uc(name)
         cdef const SAP_UC* cname = _ptr(buffer)
-        with nogil:
-            type_desc = RfcGetTypeDesc(self._handle, cname, &info)
+        with self._lock:
+            with nogil:
+                type_desc = RfcGetTypeDesc(self._handle, cname, &info)
         if type_desc == NULL:
             raise _error(&info)
         return _describe_type(type_desc)
@@ -938,12 +1069,13 @@ cdef class RFCClient:
             if result == NULL:
                 raise _error(&info)
             try:
-                with nogil:
-                    rc = RfcMetadataBatchQuery(
-                        self._handle, names, function_count,
-                        names + function_count, type_count, NULL, 0, result,
-                        &info,
-                    )
+                with self._lock:
+                    with nogil:
+                        rc = RfcMetadataBatchQuery(
+                            self._handle, names, function_count,
+                            names + function_count, type_count, NULL, 0,
+                            result, &info,
+                        )
                 failures = _query_failures(result, RFC_METADATA_TYPE)
                 failures.update(_query_failures(result, RFC_METADATA_FUNCTION))
                 # Failed lookups also fail the call: report them, not the rc.
@@ -968,7 +1100,10 @@ cdef class RFCClient:
         # The SDK keeps one metadata cache per system ID.
         cdef RFC_ERROR_INFO info
         cdef RFC_ATTRIBUTES attributes
-        _check(RfcGetConnectionAttributes(self._handle, &attributes, &info), &info)
+        cdef RFC_RC rc
+        with self._lock:
+            rc = RfcGetConnectionAttributes(self._handle, &attributes, &info)
+        _check(rc, &info)
         return Repository(_from_ucz(attributes.sysId))
 
     def evict_function(self, str name):
@@ -1006,11 +1141,22 @@ cdef int _set_params(
 ) except -1:
     cdef RFC_ERROR_INFO info
     cdef RFC_PARAMETER_DESC param
+    cdef unsigned count, index
     cdef bytes name
+    cdef dict indexes = {}
+    if params:
+        _check(RfcGetParameterCount(desc, &count, &info), &info)
+        for index in range(count):
+            _check(RfcGetParameterDescByIndex(desc, index, &param, &info), &info)
+            indexes[_from_ucz(param.name)] = index
     for key, value in params.items():
+        # The SDK resolves the name, so it decides what matches and fails.
         name = _to_uc(key)
         _check(RfcGetParameterDescByName(desc, _ptr(name), &param, &info), &info)
-        _set_value(func, param.name, param.type, param.typeDescHandle, value)
+        _set_value(
+            func, indexes[_from_ucz(param.name)], param.type,
+            _param_layout(&param), value,
+        )
     return 0
 
 
@@ -1024,7 +1170,7 @@ cdef dict _get_results(RFC_FUNCTION_DESC_HANDLE desc, RFC_FUNCTION_HANDLE func):
         _check(RfcGetParameterDescByIndex(desc, index, &param, &info), &info)
         if param.direction & RFC_EXPORT:
             result[_from_ucz(param.name)] = _get_value(
-                func, param.name, param.type, param.typeDescHandle, param.ucLength
+                func, index, param.type, param.ucLength, _param_layout(&param)
             )
     return result
 

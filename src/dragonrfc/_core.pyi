@@ -208,6 +208,10 @@ class RFCClient:
     The connection is opened on construction and closed by :meth:`close`, by
     leaving a ``with`` block, or, as a last resort, when the object is collected.
 
+    A client can be shared between threads: calls on it run one at a time,
+    each with the GIL released while it waits on the network. Open one client
+    per thread to run calls in parallel.
+
     Example:
         >>> with RFCClient(
         ...     ashost="host", sysnr="00", client="100", user="me", passwd="secret"
@@ -251,6 +255,14 @@ class RFCClient:
 
         Raises:
             RFCError: If the SDK fails to close the connection.
+        """
+    def cancel(self) -> None:
+        """Aborts the call that another thread is running on this connection.
+
+        The SDK closes the connection together with the call: the aborted call
+        raises an :class:`RFCError` and the client is closed afterwards. Does
+        nothing when the connection is closed or no call is waiting on the
+        network. Safe to call from any thread at any time.
         """
     def ping(self) -> None:
         """Sends a ping to the SAP system.

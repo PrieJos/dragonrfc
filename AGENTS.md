@@ -68,11 +68,17 @@ Guidance for AI coding agents working on `dragonrfc`.
     """
     ```
 
+11. **Sync and async together.** Every public `RFCClient` method that can block (it
+    reaches the network or the SDK may wait) gets an `AsyncRFCClient` method with the
+    same name, arguments and return type in the same commit, plus a unit test in
+    `tests/unit/test_aio.py`. Methods that only touch local state stay sync and are
+    reached through `AsyncRFCClient.client`.
+
 ## Layout
 
 `src/dragonrfc/` holds `__init__.py` (public re-exports, `__all__`, `__version__`),
 `_cinsdk.pxd` (extern declarations from `sapnwrfc.h`), `_core.pyx` and `_core.pyi`,
-`exceptions.py` and `py.typed`. `tests/unit/` needs no SAP; `tests/integration/` needs
+`aio.py` (`AsyncRFCClient`, the asyncio wrapper), `exceptions.py` and `py.typed`. `tests/unit/` needs no SAP; `tests/integration/` needs
 the SDK and a SAP system. `setup.py` defines the Cython extensions (SDK paths per OS).
 Keep the public API small; underscore-prefixed modules are private.
 
@@ -92,6 +98,10 @@ Keep the public API small; underscore-prefixed modules are private.
   managers and `close()`, with `__dealloc__` as a backstop.
 - Release the GIL (`with nogil`) around blocking network calls; touch Python objects
   only with it held.
+- Never share a handle between threads at the same time (Programming Guide 4.2.1):
+  hold the client's lock around every use of the connection handle. Async code calls
+  the sync method through `asyncio.to_thread`, never a second copy of the logic, and
+  maps task cancellation to `RfcCancel`.
 
 ### References
 

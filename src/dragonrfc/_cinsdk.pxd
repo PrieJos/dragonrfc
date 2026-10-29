@@ -143,6 +143,7 @@ cdef extern from "sapnwrfc.h" nogil:
     RFC_RC RfcIsConnectionHandleValid(
         RFC_CONNECTION_HANDLE rfcHandle, int* isValid, RFC_ERROR_INFO* errorInfo)
     RFC_RC RfcPing(RFC_CONNECTION_HANDLE rfcHandle, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcCancel(RFC_CONNECTION_HANDLE rfcHandle, RFC_ERROR_INFO* errorInfo)
     RFC_RC RfcInvoke(
         RFC_CONNECTION_HANDLE rfcHandle, RFC_FUNCTION_HANDLE funcHandle,
         RFC_ERROR_INFO* errorInfo)
@@ -286,65 +287,63 @@ cdef extern from "sapnwrfc.h" nogil:
     RFC_STRUCTURE_HANDLE RfcAppendNewRow(
         RFC_TABLE_HANDLE tableHandle, RFC_ERROR_INFO* errorInfo)
 
-    # Getters
-    RFC_RC RfcGetString(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
-        SAP_UC* stringBuffer, unsigned bufferLength, unsigned* stringLength,
+    # Getters; the index follows the DDIC order of the container's fields.
+    RFC_RC RfcGetStringByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, SAP_UC* stringBuffer,
+        unsigned bufferLength, unsigned* stringLength, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcGetBytesByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, SAP_RAW* byteBuffer,
+        unsigned bufferLength, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcGetXStringByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, SAP_RAW* byteBuffer,
+        unsigned bufferLength, unsigned* xstringLength, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcGetIntByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, RFC_INT* value,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetBytes(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
-        SAP_RAW* byteBuffer, unsigned bufferLength, RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetXString(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
-        SAP_RAW* byteBuffer, unsigned bufferLength, unsigned* xstringLength,
+    RFC_RC RfcGetInt1ByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, RFC_INT1* value,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetInt(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name, RFC_INT* value,
+    RFC_RC RfcGetInt2ByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, RFC_INT2* value,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetInt1(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name, RFC_INT1* value,
+    RFC_RC RfcGetInt8ByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, RFC_INT8* value,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetInt2(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name, RFC_INT2* value,
+    RFC_RC RfcGetFloatByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index, RFC_FLOAT* value,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetInt8(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name, RFC_INT8* value,
-        RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetFloat(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name, RFC_FLOAT* value,
-        RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetStructure(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcGetStructureByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         RFC_STRUCTURE_HANDLE* structHandle, RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcGetTable(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcGetTableByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         RFC_TABLE_HANDLE* tableHandle, RFC_ERROR_INFO* errorInfo)
 
     # Setters
-    RFC_RC RfcSetString(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetStringByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const SAP_UC* stringValue, unsigned valueLength,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetBytes(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetBytesByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const SAP_RAW* byteValue, unsigned valueLength,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetXString(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetXStringByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const SAP_RAW* byteValue, unsigned valueLength,
         RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetInt(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetIntByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const RFC_INT value, RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetInt1(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetInt1ByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const RFC_INT1 value, RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetInt2(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetInt2ByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const RFC_INT2 value, RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetInt8(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetInt8ByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const RFC_INT8 value, RFC_ERROR_INFO* errorInfo)
-    RFC_RC RfcSetFloat(
-        DATA_CONTAINER_HANDLE dataHandle, const SAP_UC* name,
+    RFC_RC RfcSetFloatByIndex(
+        DATA_CONTAINER_HANDLE dataHandle, unsigned index,
         const RFC_FLOAT value, RFC_ERROR_INFO* errorInfo)

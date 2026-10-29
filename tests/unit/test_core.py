@@ -101,6 +101,13 @@ def test_structure_and_table_roundtrip() -> None:
     assert table[1]["CHAR"] == ""
 
 
+def test_large_table_keeps_row_order() -> None:
+    rows = [{"INT": i, "CHAR": f"r{i}", "STRING": "s" * (i % 300)} for i in range(1000)]
+    table = _roundtrip(FIELDS, {"TABLE": rows})["TABLE"]
+    assert isinstance(table, list)
+    assert [{k: row[k] for k in ("INT", "CHAR", "STRING")} for row in table] == rows
+
+
 def test_initial_values() -> None:
     result = _roundtrip(FIELDS, {})
     assert result["CHAR"] == ""
@@ -141,9 +148,17 @@ def test_rejected_input(field: str, value: object, error: type[Exception]) -> No
         _roundtrip(FIELDS, {field: value})
 
 
-def test_unknown_parameter_raises_rfc_error() -> None:
-    with pytest.raises(dragonrfc.RFCError):
-        _roundtrip(FIELDS, {"NOPE": 1})
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"NOPE": 1},
+        {"STRUCT": {"NOPE": 1}},
+        {"TABLE": [{"INT": 1}, {"NOPE": 1}]},
+    ],
+)
+def test_unknown_parameter_raises_rfc_error(values: dict[str, object]) -> None:
+    with pytest.raises(dragonrfc.RFCError, match="NOPE"):
+        _roundtrip(FIELDS, values)
 
 
 def test_closed_connection_raises_typed_error() -> None:
@@ -171,6 +186,7 @@ def test_closed_connection_raises_typed_error() -> None:
         conn.prefetch(functions=["STFC_CONNECTION"])
     assert error.value.code is dragonrfc.ReturnCode.INVALID_HANDLE
     conn.close()  # no-op when already closed
+    conn.cancel()  # no-op when already closed
 
 
 def test_prefetch_rejects_a_bare_string() -> None:
