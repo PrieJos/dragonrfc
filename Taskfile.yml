@@ -9,8 +9,18 @@
 version: "3"
 
 tasks:
+  sdk:check:
+    internal: true
+    desc: Fail unless the SDK directory (SAPNWRFC_HOME, else FALLBACK) has include/ and lib/
+    preconditions:
+      - sh: |
+          dir="${SAPNWRFC_HOME:-{{.FALLBACK | default ""}}}"
+          test -n "$dir" && test -d "$dir/include" && test -d "$dir/lib"
+        msg: Set SAPNWRFC_HOME to the NW RFC SDK directory (it must contain include/ and lib/).
+
   setup:
     desc: Install dependencies and build the extension (needs SAPNWRFC_HOME)
+    deps: [sdk:check]
     cmds:
       - uv sync --reinstall-package dragonrfc
 
@@ -50,20 +60,23 @@ tasks:
       - uv run pytest
 
   test:sap:
-    desc: Run integration tests against a real SAP system
+    desc: Run integration tests against a real SAP system (needs SAPNWRFC_HOME)
+    deps: [sdk:check]
     cmds:
       - uv run pytest -m sap
 
   build:
-    desc: Build sdist and wheel
+    desc: Build sdist and wheel (needs SAPNWRFC_HOME)
+    deps: [sdk:check]
     cmds:
       - uv build
 
   wheels:
     desc: Build and test platform wheels with cibuildwheel (needs SAPNWRFC_HOME)
-    preconditions:
-      - sh: test -d nwrfcsdk || test -n "$SAPNWRFC_HOME"
-        msg: Set SAPNWRFC_HOME (or provide ./nwrfcsdk) so the SDK can reach the build container.
+    deps:
+      # CI stages the SDK as ./nwrfcsdk and sets SAPNWRFC_HOME only inside cibuildwheel.
+      - task: sdk:check
+        vars: {FALLBACK: nwrfcsdk}
     cmds:
       # Linux builds run in a container that only sees the project at /project,
       # so stage the SDK there (gitignored) as CI does. macOS builds on the host.
@@ -90,7 +103,6 @@ tasks:
             '.ruff_cache',
             'htmlcov',
             '**/__pycache__',
-            'dev_rfc.log',
         ):
             for path in pathlib.Path('.').glob(pattern):
                 if '.venv' not in path.parts:
@@ -102,6 +114,7 @@ tasks:
             'src/dragonrfc/*.so',
             'src/dragonrfc/*.pyd',
             '.coverage',
+            '**/dev_rfc.log',
         ):
             for path in pathlib.Path('.').glob(pattern):
                 path.unlink()
