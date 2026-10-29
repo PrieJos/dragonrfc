@@ -68,7 +68,8 @@ extension = Extension(
 )
 
 setup(
-    ext_modules=cythonize(
+    # Cython.Build ships no type annotations.
+    ext_modules=cythonize(  # type: ignore[no-untyped-call]
         [extension],
         compiler_directives={"language_level": 3, "embedsignature": True},
     ),
