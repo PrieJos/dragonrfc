@@ -149,6 +149,7 @@ Consult in this order:
 2. **Official SAP sources.** The notes need an S-user login, so agents may not be able
    to fetch them.
    - [SAP NetWeaver RFC SDK landing page](https://support.sap.com/en/product/connectors/nwrfcsdk.html)
+   - [SAP NetWeaver RFC SDK 7.50 Programming Guide](https://support.sap.com/content/dam/support/en_us/library/ssp/products/connectors/nwrfcsdk/NW_RFC_750_ProgrammingGuide.pdf)
    - SAP Note 2573790: installation, support and availability of the NW RFC SDK.
    - SAP Note 2573881: NW RFC SDK release notes (check for features added since PyRFC).
 3. **Inspiration only:** [SAP-archive/PyRFC](https://github.com/SAP-archive/PyRFC).
