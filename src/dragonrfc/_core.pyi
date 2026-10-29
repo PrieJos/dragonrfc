@@ -11,9 +11,11 @@ Public typing contract of the Cython extension; it must match ``_core.pyx``
 API:
     - ``RFCValue``: typing-only alias for values returned by function calls.
     - :class:`RFCClient`: client connection to an SAP system, with function
-      calls and metadata lookups.
+      calls, metadata lookups and batch prefetch.
+    - :class:`Repository`: SDK metadata cache of one system ID.
     - :func:`sdk_version`: version of the loaded SDK.
-    - ``_roundtrip``, ``_describe_test``: private test hooks.
+    - ``_roundtrip``, ``_describe_test``, ``_add_test_repository``: private
+      test hooks.
 
 Example:
     >>> from dragonrfc import RFCClient
@@ -22,6 +24,8 @@ Example:
 """
 
 import datetime
+import os
+from collections.abc import Iterable
 from decimal import Decimal
 from types import TracebackType
 from typing import Self, TypeAlias
@@ -67,6 +71,15 @@ def _describe_test(
     Test hook: exercises the metadata readers without an SAP system.
     """
 
+def _add_test_repository(
+    sysid: str, fields: list[tuple[str, int, int, int, int]]
+) -> None:
+    """Adds the ``_roundtrip`` function and its line type to ``sysid``'s cache.
+
+    Test hook: exercises :class:`Repository` without an SAP system. The cache
+    owns the descriptions afterwards; drop them with ``Repository.clear``.
+    """
+
 def sdk_version() -> tuple[int, int, int]:
     """Returns the version of the loaded SAP NW RFC SDK.
 
@@ -77,6 +90,114 @@ def sdk_version() -> tuple[int, int, int]:
         >>> sdk_version()
         (7500, 0, 20)
     """
+
+@disjoint_base
+class Repository:
+    """The SDK metadata cache of one SAP system.
+
+    The SDK keeps one process-wide cache per system ID. It is filled by
+    :meth:`RFCClient.call`, :meth:`RFCClient.describe_function`,
+    :meth:`RFCClient.prefetch` or :meth:`load`, and read here without a
+    connection.
+
+    Example:
+        >>> repo = conn.repository  # or Repository("ABC")
+        >>> repo.save("abc-metadata.json")
+        >>> Repository("ABC").load("abc-metadata.json")  # at the next start-up
+    """
+
+    def __init__(self, sysid: str | None = None) -> None:
+        """Selects the cache of a system.
+
+        Args:
+            sysid: SAP system ID, e.g. ``"ABC"``, or ``None`` for the SDK's
+                default repository.
+
+        Raises:
+            TypeError: If ``sysid`` is neither ``str`` nor ``None``.
+        """
+    @property
+    def sysid(self) -> str | None:
+        """System ID of this cache, or ``None`` for the default repository."""
+    def describe_function(self, name: str) -> FunctionMetadata:
+        """Returns the cached signature of a function module.
+
+        Args:
+            name: Function module name, e.g. ``"STFC_CONNECTION"``.
+
+        Returns:
+            Parameters, with nested structure types, and classic exceptions.
+
+        Raises:
+            RFCError: If the function is not in this cache.
+        """
+    def describe_type(self, name: str) -> TypeMetadata:
+        """Returns the cached layout of a DDIC structure or table type.
+
+        Args:
+            name: Type name, e.g. ``"RFCTEST"``.
+
+        Returns:
+            Fields with offsets and lengths, with nested types.
+
+        Raises:
+            RFCError: If the type is not in this cache.
+        """
+    def evict_function(self, name: str) -> None:
+        """Drops a function description from this cache.
+
+        Use it after the function's signature changed in the backend; the next
+        call or description reads it again from the DDIC.
+
+        Args:
+            name: Function module name.
+
+        Raises:
+            RFCError: If the SDK rejects the removal.
+        """
+    def evict_type(self, name: str) -> None:
+        """Drops a type description from this cache.
+
+        Args:
+            name: DDIC structure or table type name.
+
+        Raises:
+            RFCError: If the SDK rejects the removal.
+        """
+    def clear(self) -> None:
+        """Drops every description in this cache.
+
+        Raises:
+            RFCError: If the SDK rejects the request.
+        """
+    def save(self, path: str | os.PathLike[str]) -> None:
+        """Writes the cached function descriptions to a JSON file.
+
+        The file format is shared with SAP JCo and SAP NCo. Load it with
+        :meth:`load` to skip DDIC lookups at start-up.
+
+        Args:
+            path: Target file; created or overwritten.
+
+        Raises:
+            OSError: If the file cannot be written.
+            RFCError: If the SDK fails to serialize the cache.
+        """
+    def load(self, path: str | os.PathLike[str]) -> None:
+        """Replaces this cache with the descriptions in a JSON file.
+
+        The file must match the backend's current DDIC; outdated metadata can
+        truncate or corrupt data in later calls. The format keeps layouts but
+        not parameter defaults or texts, and the SDK drops blanks from loaded
+        exception messages.
+
+        Args:
+            path: File written by :meth:`save`, SAP JCo or SAP NCo.
+
+        Raises:
+            OSError: If the file cannot be read.
+            RFCError: If the file is not a valid repository.
+        """
 
 @disjoint_base
 class RFCClient:
@@ -183,6 +304,40 @@ class RFCClient:
         Raises:
             RFCError: If the type does not exist.
             RFCCommunicationError: If the network call fails.
+            RFCExternalRuntimeError: If the connection is closed.
+        """
+    def prefetch(
+        self,
+        functions: Iterable[str] = (),
+        types: Iterable[str] = (),
+    ) -> dict[str, str]:
+        """Loads many descriptions into the SDK cache in one request.
+
+        Open the connection with ``USE_REPOSITORY_ROUNDTRIP_OPTIMIZATION="1"``
+        so the SDK fetches everything in a single roundtrip; the backend needs
+        the support package level from SAP Note 1456826. Descriptions found are
+        cached for :meth:`call`, :meth:`describe_function` and
+        :attr:`repository`.
+
+        Args:
+            functions: Function module names.
+            types: DDIC structure or table type names.
+
+        Returns:
+            Error message by name for every lookup that failed; empty when all
+            succeeded. A function and a type with the same name share one key.
+
+        Raises:
+            TypeError: If ``functions`` or ``types`` is a ``str`` or holds a
+                non-``str``.
+            RFCCommunicationError: If the network call fails.
+            RFCExternalRuntimeError: If the connection is closed.
+        """
+    @property
+    def repository(self) -> Repository:
+        """The SDK metadata cache of this connection's system.
+
+        Raises:
             RFCExternalRuntimeError: If the connection is closed.
         """
     def evict_function(self, name: str) -> None:

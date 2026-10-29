@@ -6,6 +6,14 @@
 # Extern declarations for the subset of sapnwrfc.h (NW RFC SDK 7.50) used by
 # dragonrfc. Signatures are copied from the SDK header; keep them in sync.
 
+from libc.stdio cimport FILE
+
+
+cdef extern from "<stdio.h>" nogil:
+    # POSIX name; MSVC still exports it (as a deprecated alias of _fdopen).
+    FILE* fdopen(int fd, const char* mode)
+
+
 cdef extern from "sapnwrfc.h" nogil:
     # SAP_UC is char16_t (Linux/macOS) or wchar_t (Windows): always 2 bytes.
     ctypedef unsigned short SAP_UC
@@ -155,6 +163,55 @@ cdef extern from "sapnwrfc.h" nogil:
     RFC_RC RfcRemoveTypeDesc(
         const SAP_UC* repositoryID, const SAP_UC* typeName,
         RFC_ERROR_INFO* errorInfo)
+    RFC_FUNCTION_DESC_HANDLE RfcGetCachedFunctionDesc(
+        const SAP_UC* repositoryID, const SAP_UC* funcName,
+        RFC_ERROR_INFO* errorInfo)
+    RFC_TYPE_DESC_HANDLE RfcGetCachedTypeDesc(
+        const SAP_UC* repositoryID, const SAP_UC* typeName,
+        RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcAddFunctionDesc(
+        const SAP_UC* repositoryID, RFC_FUNCTION_DESC_HANDLE funcDesc,
+        RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcAddTypeDesc(
+        const SAP_UC* repositoryID, RFC_TYPE_DESC_HANDLE typeHandle,
+        RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcClearRepository(
+        const SAP_UC* repositoryID, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcSaveRepository(
+        const SAP_UC* repositoryID, FILE* const targetStream,
+        RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcLoadRepository(
+        const SAP_UC* repositoryID, FILE* const targetStream,
+        RFC_ERROR_INFO* errorInfo)
+
+    # Metadata batch query
+    ctypedef void* RFC_METADATA_QUERY_RESULT_HANDLE
+
+    ctypedef struct RFC_METADATA_QUERY_RESULT_ENTRY:
+        RFC_ABAP_NAME name
+        SAP_UC errorMessage[512]
+
+    ctypedef enum RFC_METADATA_OBJ_TYPE:
+        RFC_METADATA_FUNCTION
+        RFC_METADATA_TYPE
+        RFC_METADATA_CLASS
+
+    RFC_METADATA_QUERY_RESULT_HANDLE RfcCreateMetadataQueryResult(
+        RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcDestroyMetadataQueryResult(
+        RFC_METADATA_QUERY_RESULT_HANDLE handle, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcDescribeMetadataQueryResult(
+        RFC_METADATA_QUERY_RESULT_HANDLE handle, RFC_METADATA_OBJ_TYPE type,
+        unsigned* successful, unsigned* failed, RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcGetMetadataQueryFailedEntry(
+        RFC_METADATA_QUERY_RESULT_HANDLE handle, RFC_METADATA_OBJ_TYPE type,
+        unsigned index, RFC_METADATA_QUERY_RESULT_ENTRY* entry,
+        RFC_ERROR_INFO* errorInfo)
+    RFC_RC RfcMetadataBatchQuery(
+        RFC_CONNECTION_HANDLE rfcHandle, const SAP_UC** functionNames,
+        unsigned functionCount, const SAP_UC** typeNames, unsigned typeCount,
+        const SAP_UC** classNames, unsigned classCount,
+        RFC_METADATA_QUERY_RESULT_HANDLE handle, RFC_ERROR_INFO* errorInfo)
 
     # Metadata
     RFC_RC RfcGetFunctionName(

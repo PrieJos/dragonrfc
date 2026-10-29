@@ -14,7 +14,8 @@ and optionally ``DRAGONRFC_SNC_MYNAME``, ``DRAGONRFC_SNC_LIB`` and
 API:
     - ``params`` / ``conn`` fixtures: logon parameters and an open connection.
     - Tests for open/ping/close, SNC logon, logon errors, scalar and structure calls,
-      ABAP exceptions, metadata lookups and cache eviction.
+      ABAP exceptions, metadata lookups, cache eviction, batch prefetch and
+      repository save/load.
 
 Example:
     $ DRAGONRFC_ASHOST=... task test:sap
@@ -22,6 +23,7 @@ Example:
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -134,3 +136,34 @@ def test_evict_then_describe(conn: dragonrfc.RFCClient) -> None:
 def test_describe_unknown_function(conn: dragonrfc.RFCClient) -> None:
     with pytest.raises(dragonrfc.RFCError):
         conn.describe_function("Z_DRAGONRFC_DOES_NOT_EXIST")
+
+
+def test_prefetch(params: dict[str, str]) -> None:
+    # Needs a backend with SAP Note 1456826; failures here may mean it is missing.
+    logon = {**params, "use_repository_roundtrip_optimization": "1"}
+    with dragonrfc.RFCClient(**logon) as conn:
+        conn.repository.clear()
+        failures = conn.prefetch(
+            functions=["STFC_CONNECTION", "Z_DRAGONRFC_DOES_NOT_EXIST"],
+            types=["RFCTEST"],
+        )
+        assert set(failures) == {"Z_DRAGONRFC_DOES_NOT_EXIST"}
+        repo = conn.repository
+        assert repo.describe_function("STFC_CONNECTION") == conn.describe_function(
+            "STFC_CONNECTION"
+        )
+        assert repo.describe_type("RFCTEST") == conn.describe_type("RFCTEST")
+
+
+def test_repository_save_and_load(conn: dragonrfc.RFCClient, tmp_path: Path) -> None:
+    before = conn.describe_function("STFC_STRUCTURE")
+    repo = conn.repository
+    repo.save(tmp_path / "repo.json")
+    repo.clear()
+    repo.load(tmp_path / "repo.json")
+    after = repo.describe_function("STFC_STRUCTURE")
+    # The JSON format drops defaults and texts; check what it keeps.
+    assert [(p.name, p.type, p.direction) for p in after.parameters] == [
+        (p.name, p.type, p.direction) for p in before.parameters
+    ]
+    assert conn.call("STFC_CONNECTION", REQUTEXT="x")["ECHOTEXT"] == "x"

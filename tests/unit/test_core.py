@@ -6,12 +6,15 @@
 """Unit tests for the compiled ``dragonrfc._core`` extension.
 
 They need the SDK but no SAP system: conversions run through locally defined
-function descriptions via the ``_roundtrip`` and ``_describe_test`` hooks.
+function descriptions via the ``_roundtrip`` and ``_describe_test`` hooks, and
+the repository API through ``_add_test_repository``.
 
 API:
     - ``FIELDS`` / ``VALUES``: one field and sample value per supported type.
-    - Tests for type round trips, input validation, metadata readers, typed
-      errors on closed or unreachable connections, and ``py.typed`` shipping.
+    - ``repo`` fixture: a :class:`Repository` holding the test function.
+    - Tests for type round trips, input validation, metadata readers, the
+      metadata cache (lookup, eviction, JSON save/load), typed errors on
+      closed or unreachable connections, and ``py.typed`` shipping.
 
 Example:
     $ task test
@@ -19,14 +22,17 @@ Example:
 
 import dataclasses
 import datetime
+import json
+from collections.abc import Iterator
 from decimal import Decimal
 from importlib import resources
+from pathlib import Path
 
 import pytest
 
 import dragonrfc
-from dragonrfc import ABAPType, Direction
-from dragonrfc._core import _describe_test, _roundtrip
+from dragonrfc import ABAPType, Direction, Repository
+from dragonrfc._core import _add_test_repository, _describe_test, _roundtrip
 
 # (name, RFCTYPE, nuc_length, uc_length, decimals), values from sapnwrfc.h.
 FIELDS = [
@@ -157,7 +163,22 @@ def test_closed_connection_raises_typed_error() -> None:
         with pytest.raises(dragonrfc.RFCExternalRuntimeError) as info:
             method("STFC_CONNECTION")
         assert info.value.code is dragonrfc.ReturnCode.INVALID_HANDLE
+    with pytest.raises(dragonrfc.RFCExternalRuntimeError) as info:
+        _ = conn.repository
+    assert info.value.code is dragonrfc.ReturnCode.INVALID_HANDLE
+    # The SDK reports this one in another error group than the other calls.
+    with pytest.raises(dragonrfc.RFCError) as error:
+        conn.prefetch(functions=["STFC_CONNECTION"])
+    assert error.value.code is dragonrfc.ReturnCode.INVALID_HANDLE
     conn.close()  # no-op when already closed
+
+
+def test_prefetch_rejects_a_bare_string() -> None:
+    conn = dragonrfc.RFCClient.__new__(dragonrfc.RFCClient)
+    with pytest.raises(TypeError, match="iterables of str"):
+        conn.prefetch(functions="STFC_CONNECTION")
+    with pytest.raises(TypeError):
+        conn.prefetch(types=[1])  # type: ignore[list-item]
 
 
 def test_connection_parameter_validation() -> None:
@@ -232,3 +253,80 @@ def test_metadata_is_frozen_and_dumpable() -> None:
         meta.name = "X"  # type: ignore[misc]
     dumped = dataclasses.asdict(meta)
     assert dumped["parameters"][-1]["structure"]["fields"][0]["name"] == "CHAR"
+
+
+@pytest.fixture
+def repo(request: pytest.FixtureRequest) -> Iterator[Repository]:
+    # The SDK cache is process-wide: one repository ID per test.
+    sysid = f"T{request.node.name[:20]}"
+    _add_test_repository(sysid, FIELDS)
+    repository = Repository(sysid)
+    yield repository
+    repository.clear()
+
+
+def test_repository_describes_cached_metadata(repo: Repository) -> None:
+    meta = repo.describe_function("ZDRAGONRFC_ROUNDTRIP")
+    local = _describe_test(FIELDS)
+    # The cache recomputes field offsets on add, so compare the rest.
+    assert [(p.name, p.type, p.direction) for p in meta.parameters] == [
+        (p.name, p.type, p.direction) for p in local.parameters
+    ]
+    line = repo.describe_type("ZDRAGONRFC_LINE")
+    assert meta.parameters[-1].structure == line
+    assert [
+        (f.name, f.type, f.nuc_length, f.uc_length, f.decimals) for f in line.fields
+    ] == FIELDS
+
+
+def test_repository_evict_and_clear(repo: Repository) -> None:
+    repo.evict_function("ZDRAGONRFC_ROUNDTRIP")
+    with pytest.raises(dragonrfc.RFCError) as info:
+        repo.describe_function("ZDRAGONRFC_ROUNDTRIP")
+    assert info.value.code is dragonrfc.ReturnCode.NOT_FOUND
+    repo.describe_type("ZDRAGONRFC_LINE")
+    repo.evict_type("ZDRAGONRFC_LINE")
+    repo.evict_type("ZDRAGONRFC_LINE")  # removing a missing name is accepted
+    _add_test_repository(repo.sysid or "", FIELDS)
+    repo.clear()
+    with pytest.raises(dragonrfc.RFCError):
+        repo.describe_type("ZDRAGONRFC_LINE")
+
+
+def test_repository_save_and_load(repo: Repository, tmp_path: Path) -> None:
+    before = repo.describe_function("ZDRAGONRFC_ROUNDTRIP")
+    path = tmp_path / "日本" / "repo.json"
+    path.parent.mkdir()
+    repo.save(path)
+    assert json.loads(path.read_text("utf-8"))["name"] == repo.sysid
+    repo.clear()
+    repo.load(str(path))
+    after = repo.describe_function("ZDRAGONRFC_ROUNDTRIP")
+    # The JSON format drops defaults and texts; field layouts survive.
+    assert [(p.name, p.type, p.direction, p.optional) for p in after.parameters] == [
+        (p.name, p.type, p.direction, p.optional) for p in before.parameters
+    ]
+    assert after.parameters[: len(FIELDS)] == before.parameters[: len(FIELDS)]
+    struct = before.parameters[-1].structure
+    assert struct is not None
+    assert repo.describe_type("ZDRAGONRFC_LINE").fields == struct.fields
+    assert [e.key for e in after.exceptions] == ["ZDRAGONRFC_FAILED"]
+
+
+def test_repository_load_errors(repo: Repository, tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        repo.load(tmp_path / "missing.json")
+    (tmp_path / "bad.json").write_text("not json")
+    with pytest.raises(dragonrfc.RFCError) as info:
+        repo.load(tmp_path / "bad.json")
+    assert info.value.code is dragonrfc.ReturnCode.SERIALIZATION_FAILURE
+
+
+def test_default_repository() -> None:
+    repo = Repository()
+    assert repo.sysid is None
+    assert repr(repo) == "<dragonrfc.Repository None>"
+    with pytest.raises(dragonrfc.RFCError):
+        repo.describe_function("ZDRAGONRFC_ROUNDTRIP")
+    with pytest.raises(TypeError):
+        Repository(1)  # type: ignore[arg-type]

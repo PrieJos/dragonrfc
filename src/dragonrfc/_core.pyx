@@ -12,11 +12,15 @@ boundary only. Every failing SDK call raises the matching
 
 API:
     - :class:`RFCClient`: open on construction; ``ping``, ``call``, ``close``,
-      ``alive``, ``describe_function``, ``describe_type``, ``evict_function``,
-      ``evict_type``; usable as a context manager.
+      ``alive``, ``describe_function``, ``describe_type``, ``prefetch``,
+      ``repository``, ``evict_function``, ``evict_type``; usable as a context
+      manager.
+    - :class:`Repository`: the SDK metadata cache of one system ID; cache-only
+      ``describe_function``/``describe_type``, ``evict_function``,
+      ``evict_type``, ``clear``, ``save`` and ``load`` (JSON file).
     - :func:`sdk_version`: version of the loaded SDK.
-    - ``_roundtrip``, ``_describe_test``: private test hooks for conversions and
-      metadata without an SAP system.
+    - ``_roundtrip``, ``_describe_test``, ``_add_test_repository``: private test
+      hooks for conversions and metadata without an SAP system.
 
 Example:
     >>> with RFCClient(dest="MYSYS") as conn:
@@ -25,11 +29,14 @@ Example:
 """
 
 import datetime
+import os
 import sys
 from decimal import Decimal
 
 from cpython.mem cimport PyMem_Free, PyMem_Malloc
 from cpython.unicode cimport PyUnicode_DecodeUTF16
+from libc.errno cimport errno
+from libc.stdio cimport fclose
 from libc.string cimport memcpy, memset
 
 from dragonrfc._cinsdk cimport *
@@ -437,6 +444,53 @@ cdef object _describe_function(RFC_FUNCTION_DESC_HANDLE desc):
     )
 
 
+cdef dict _query_failures(
+    RFC_METADATA_QUERY_RESULT_HANDLE result, RFC_METADATA_OBJ_TYPE kind
+):
+    cdef RFC_ERROR_INFO info
+    cdef RFC_METADATA_QUERY_RESULT_ENTRY entry
+    cdef unsigned succeeded, failed, index
+    cdef dict failures = {}
+    _check(
+        RfcDescribeMetadataQueryResult(result, kind, &succeeded, &failed, &info),
+        &info,
+    )
+    for index in range(failed):
+        _check(
+            RfcGetMetadataQueryFailedEntry(result, kind, index, &entry, &info),
+            &info,
+        )
+        failures[_from_ucz(entry.name)] = _from_ucz(entry.errorMessage)
+    return failures
+
+
+cdef int _stream_repository(
+    const SAP_UC* repository, object path, bint save
+) except -1:
+    """Saves or loads ``repository`` through a C stream on ``path``."""
+    cdef RFC_ERROR_INFO info
+    cdef RFC_RC rc
+    cdef FILE* stream
+    cdef int fd
+    # Python opens the path so every OS and path encoding works; the SDK gets a
+    # duplicate descriptor wrapped in a FILE*.
+    with open(path, "wb" if save else "rb") as file:
+        fd = os.dup(file.fileno())
+        stream = fdopen(fd, b"wb" if save else b"rb")
+        if stream == NULL:
+            os.close(fd)
+            raise OSError(errno, os.strerror(errno), path)
+        with nogil:
+            if save:
+                rc = RfcSaveRepository(repository, stream, &info)
+            else:
+                rc = RfcLoadRepository(repository, stream, &info)
+        if fclose(stream) != 0 and rc == RFC_OK:
+            raise OSError(errno, os.strerror(errno), path)
+    _check(rc, &info)
+    return 0
+
+
 # --- Public API ------------------------------------------------------------
 
 def sdk_version():
@@ -452,6 +506,162 @@ def sdk_version():
     cdef unsigned major = 0, minor = 0, patch = 0
     RfcGetVersion(&major, &minor, &patch)
     return major, minor, patch
+
+
+cdef class Repository:
+    """The SDK metadata cache of one SAP system.
+
+    The SDK keeps one process-wide cache per system ID. It is filled by
+    :meth:`RFCClient.call`, :meth:`RFCClient.describe_function`,
+    :meth:`RFCClient.prefetch` or :meth:`load`, and read here without a
+    connection.
+
+    Example:
+        >>> repo = conn.repository  # or Repository("ABC")
+        >>> repo.save("abc-metadata.json")
+        >>> Repository("ABC").load("abc-metadata.json")  # at the next start-up
+    """
+
+    cdef bytes _id
+    cdef object _sysid
+
+    def __init__(self, sysid=None):
+        """Selects the cache of a system.
+
+        Args:
+            sysid: SAP system ID, e.g. ``"ABC"``, or ``None`` for the SDK's
+                default repository.
+
+        Raises:
+            TypeError: If ``sysid`` is neither ``str`` nor ``None``.
+        """
+        if sysid is not None and not isinstance(sysid, str):
+            raise TypeError(f"sysid must be str or None, not {type(sysid).__name__}")
+        self._sysid = sysid
+        self._id = None if sysid is None else _to_uc(sysid)
+
+    cdef inline const SAP_UC* _rid(self):
+        return NULL if self._id is None else _ptr(self._id)
+
+    def __repr__(self):
+        return f"<dragonrfc.Repository {self._sysid!r}>"
+
+    @property
+    def sysid(self):
+        """System ID of this cache, or ``None`` for the default repository."""
+        return self._sysid
+
+    def describe_function(self, str name):
+        """Returns the cached signature of a function module.
+
+        Args:
+            name: Function module name, e.g. ``"STFC_CONNECTION"``.
+
+        Returns:
+            Parameters, with nested structure types, and classic exceptions.
+
+        Raises:
+            RFCError: If the function is not in this cache.
+        """
+        cdef RFC_ERROR_INFO info
+        cdef bytes buffer = _to_uc(name)
+        cdef RFC_FUNCTION_DESC_HANDLE desc = RfcGetCachedFunctionDesc(
+            self._rid(), _ptr(buffer), &info
+        )
+        if desc == NULL:
+            raise _error(&info)
+        return _describe_function(desc)
+
+    def describe_type(self, str name):
+        """Returns the cached layout of a DDIC structure or table type.
+
+        Args:
+            name: Type name, e.g. ``"RFCTEST"``.
+
+        Returns:
+            Fields with offsets and lengths, with nested types.
+
+        Raises:
+            RFCError: If the type is not in this cache.
+        """
+        cdef RFC_ERROR_INFO info
+        cdef bytes buffer = _to_uc(name)
+        cdef RFC_TYPE_DESC_HANDLE type_desc = RfcGetCachedTypeDesc(
+            self._rid(), _ptr(buffer), &info
+        )
+        if type_desc == NULL:
+            raise _error(&info)
+        return _describe_type(type_desc)
+
+    def evict_function(self, str name):
+        """Drops a function description from this cache.
+
+        Use it after the function's signature changed in the backend; the next
+        call or description reads it again from the DDIC.
+
+        Args:
+            name: Function module name.
+
+        Raises:
+            RFCError: If the SDK rejects the removal.
+        """
+        cdef RFC_ERROR_INFO info
+        cdef bytes buffer = _to_uc(name)
+        _check(RfcRemoveFunctionDesc(self._rid(), _ptr(buffer), &info), &info)
+
+    def evict_type(self, str name):
+        """Drops a type description from this cache.
+
+        Args:
+            name: DDIC structure or table type name.
+
+        Raises:
+            RFCError: If the SDK rejects the removal.
+        """
+        cdef RFC_ERROR_INFO info
+        cdef bytes buffer = _to_uc(name)
+        _check(RfcRemoveTypeDesc(self._rid(), _ptr(buffer), &info), &info)
+
+    def clear(self):
+        """Drops every description in this cache.
+
+        Raises:
+            RFCError: If the SDK rejects the request.
+        """
+        cdef RFC_ERROR_INFO info
+        _check(RfcClearRepository(self._rid(), &info), &info)
+
+    def save(self, path):
+        """Writes the cached function descriptions to a JSON file.
+
+        The file format is shared with SAP JCo and SAP NCo. Load it with
+        :meth:`load` to skip DDIC lookups at start-up.
+
+        Args:
+            path: Target file; created or overwritten.
+
+        Raises:
+            OSError: If the file cannot be written.
+            RFCError: If the SDK fails to serialize the cache.
+        """
+        _stream_repository(self._rid(), path, True)
+
+    def load(self, path):
+        """Replaces this cache with the descriptions in a JSON file.
+
+        The file must match the backend's current DDIC; outdated metadata can
+        truncate or corrupt data in later calls. The format keeps layouts but
+        not parameter defaults or texts, and the SDK drops blanks from loaded
+        exception messages.
+
+        Args:
+            path: File written by :meth:`save`, SAP JCo or SAP NCo.
+
+        Raises:
+            OSError: If the file cannot be read.
+            RFCError: If the file is not a valid repository.
+        """
+        _stream_repository(self._rid(), path, False)
 
 
 cdef class RFCClient:
@@ -678,6 +888,89 @@ cdef class RFCClient:
             raise _error(&info)
         return _describe_type(type_desc)
 
+    def prefetch(self, functions=(), types=()):
+        """Loads many descriptions into the SDK cache in one request.
+
+        Open the connection with ``USE_REPOSITORY_ROUNDTRIP_OPTIMIZATION="1"``
+        so the SDK fetches everything in a single roundtrip; the backend needs
+        the support package level from SAP Note 1456826. Descriptions found are
+        cached for :meth:`call`, :meth:`describe_function` and
+        :attr:`repository`.
+
+        Args:
+            functions: Function module names.
+            types: DDIC structure or table type names.
+
+        Returns:
+            Error message by name for every lookup that failed; empty when all
+            succeeded. A function and a type with the same name share one key.
+
+        Raises:
+            TypeError: If ``functions`` or ``types`` is a ``str`` or holds a
+                non-``str``.
+            RFCCommunicationError: If the network call fails.
+            RFCExternalRuntimeError: If the connection is closed.
+        """
+        cdef RFC_ERROR_INFO info
+        cdef RFC_ERROR_INFO cleanup
+        cdef RFC_RC rc
+        cdef RFC_METADATA_QUERY_RESULT_HANDLE result
+        cdef const SAP_UC** names
+        cdef unsigned function_count, type_count, index
+        cdef bytes buffer
+
+        if isinstance(functions, str) or isinstance(types, str):
+            raise TypeError("functions and types must be iterables of str")
+        functions, types = list(functions), list(types)
+        function_count, type_count = len(functions), len(types)
+        # Keep the encoded buffers alive until RfcMetadataBatchQuery returns.
+        buffers = [_to_uc(name) for name in functions + types]
+        names = <const SAP_UC**>PyMem_Malloc(
+            (len(buffers) or 1) * sizeof(SAP_UC*)
+        )
+        if names == NULL:
+            raise MemoryError()
+        try:
+            for index in range(len(buffers)):
+                buffer = buffers[index]
+                names[index] = _ptr(buffer)
+            result = RfcCreateMetadataQueryResult(&info)
+            if result == NULL:
+                raise _error(&info)
+            try:
+                with nogil:
+                    rc = RfcMetadataBatchQuery(
+                        self._handle, names, function_count,
+                        names + function_count, type_count, NULL, 0, result,
+                        &info,
+                    )
+                failures = _query_failures(result, RFC_METADATA_TYPE)
+                failures.update(_query_failures(result, RFC_METADATA_FUNCTION))
+                # Failed lookups also fail the call: report them, not the rc.
+                if rc != RFC_OK and not failures:
+                    raise _error(&info)
+            except BaseException:
+                # Already failing: keep the original error over a cleanup failure.
+                RfcDestroyMetadataQueryResult(result, &cleanup)
+                raise
+            _check(RfcDestroyMetadataQueryResult(result, &cleanup), &cleanup)
+        finally:
+            PyMem_Free(names)
+        return failures
+
+    @property
+    def repository(self):
+        """The SDK metadata cache of this connection's system.
+
+        Raises:
+            RFCExternalRuntimeError: If the connection is closed.
+        """
+        # The SDK keeps one metadata cache per system ID.
+        cdef RFC_ERROR_INFO info
+        cdef RFC_ATTRIBUTES attributes
+        _check(RfcGetConnectionAttributes(self._handle, &attributes, &info), &info)
+        return Repository(_from_ucz(attributes.sysId))
+
     def evict_function(self, str name):
         """Drops a function description from the SDK cache for this system.
 
@@ -691,10 +984,7 @@ cdef class RFCClient:
             RFCExternalRuntimeError: If the connection is closed.
             RFCError: If the SDK rejects the removal.
         """
-        cdef RFC_ERROR_INFO info
-        cdef bytes repository = self._repository_id()
-        cdef bytes buffer = _to_uc(name)
-        _check(RfcRemoveFunctionDesc(_ptr(repository), _ptr(buffer), &info), &info)
+        self.repository.evict_function(name)
 
     def evict_type(self, str name):
         """Drops a type description from the SDK cache for this system.
@@ -706,17 +996,7 @@ cdef class RFCClient:
             RFCExternalRuntimeError: If the connection is closed.
             RFCError: If the SDK rejects the removal.
         """
-        cdef RFC_ERROR_INFO info
-        cdef bytes repository = self._repository_id()
-        cdef bytes buffer = _to_uc(name)
-        _check(RfcRemoveTypeDesc(_ptr(repository), _ptr(buffer), &info), &info)
-
-    cdef bytes _repository_id(self):
-        # The SDK keeps one metadata cache per system ID.
-        cdef RFC_ERROR_INFO info
-        cdef RFC_ATTRIBUTES attributes
-        _check(RfcGetConnectionAttributes(self._handle, &attributes, &info), &info)
-        return _to_uc(_from_ucz(attributes.sysId))
+        self.repository.evict_type(name)
 
 
 # --- Function containers ---------------------------------------------------
@@ -788,6 +1068,27 @@ def _describe_test(list fields):
     finally:
         RfcDestroyFunctionDesc(desc, &info)
         RfcDestroyTypeDesc(type_desc, &info)
+
+
+def _add_test_repository(str sysid, list fields):
+    """Adds the ``_roundtrip`` function and its line type to ``sysid``'s cache.
+
+    Test hook: exercises :class:`Repository` without an SAP system. The cache
+    owns the descriptions afterwards; drop them with ``Repository.clear``.
+    """
+    cdef RFC_ERROR_INFO info
+    cdef RFC_ERROR_INFO cleanup
+    cdef RFC_TYPE_DESC_HANDLE type_desc = NULL
+    cdef RFC_FUNCTION_DESC_HANDLE desc = _build_test_desc(fields, &type_desc)
+    cdef bytes repository = _to_uc(sysid)
+    if RfcAddTypeDesc(_ptr(repository), type_desc, &info) != RFC_OK:
+        RfcDestroyFunctionDesc(desc, &cleanup)
+        RfcDestroyTypeDesc(type_desc, &cleanup)
+        raise _error(&info)
+    if RfcAddFunctionDesc(_ptr(repository), desc, &info) != RFC_OK:
+        # The type already belongs to the cache.
+        RfcDestroyFunctionDesc(desc, &cleanup)
+        raise _error(&info)
 
 
 cdef RFC_FUNCTION_DESC_HANDLE _build_test_desc(

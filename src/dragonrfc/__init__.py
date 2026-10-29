@@ -10,8 +10,10 @@ or make its ``lib/`` directory findable by the dynamic loader (Linux, macOS).
 
 API:
     - :class:`RFCClient`: client connection; ``ping``, ``call``, ``close``,
-      ``describe_function``, ``describe_type``, ``evict_function``,
-      ``evict_type``.
+      ``describe_function``, ``describe_type``, ``prefetch``, ``repository``,
+      ``evict_function``, ``evict_type``.
+    - :class:`Repository`: SDK metadata cache of one system; cache-only
+      lookups, eviction, ``clear``, ``save`` and ``load`` (JSON file).
     - :class:`FunctionMetadata` and related dataclasses, :class:`ABAPType`,
       :class:`Direction`: function and type metadata.
     - :func:`sdk_version`: version of the loaded SDK.
@@ -33,7 +35,7 @@ if sys.platform == "win32" and "SAPNWRFC_HOME" in os.environ:
     # Kept referenced: the directory is removed from the search path on close.
     _dll_dir = os.add_dll_directory(os.path.join(os.environ["SAPNWRFC_HOME"], "lib"))
 
-from dragonrfc._core import RFCClient, sdk_version
+from dragonrfc._core import Repository, RFCClient, sdk_version
 from dragonrfc.exceptions import (
     ErrorGroup,
     ReturnCode,
@@ -81,6 +83,7 @@ __all__ = [
     "RFCExternalRuntimeError",
     "RFCLockingError",
     "RFCLogonError",
+    "Repository",
     "ReturnCode",
     "TypeMetadata",
     "__version__",

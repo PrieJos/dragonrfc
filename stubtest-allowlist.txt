@@ -8,5 +8,7 @@
 dragonrfc\._core\.__reduce_cython__
 dragonrfc\._core\.__setstate_cython__
 dragonrfc\._core\.__test__
+dragonrfc\._core\.Repository\.__reduce_cython__
+dragonrfc\._core\.Repository\.__setstate_cython__
 # Typing-only alias: exists in the stub, not at runtime.
 dragonrfc\._core\.RFCValue
