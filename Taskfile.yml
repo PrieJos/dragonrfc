@@ -72,6 +72,41 @@ tasks:
         export CIBW_ENVIRONMENT_LINUX="${CIBW_ENVIRONMENT_LINUX:-SAPNWRFC_HOME=/project/nwrfcsdk LD_LIBRARY_PATH=/project/nwrfcsdk/lib}"
         uvx cibuildwheel==3.* --output-dir wheelhouse
 
+  clean:
+    desc: Remove build artifacts, generated C files and tool caches and the SDK copy staged by wheels (keeps .venv, .env)
+    cmds:
+      - |
+        uv run python -c "
+        import pathlib, shutil
+        for pattern in (
+            'build',
+            'dist',
+            'wheelhouse',
+            'nwrfcsdk',
+            '*.egg-info',
+            'src/*.egg-info',
+            '.pytest_cache',
+            '.mypy_cache',
+            '.ruff_cache',
+            'htmlcov',
+            '**/__pycache__',
+            'dev_rfc.log',
+        ):
+            for path in pathlib.Path('.').glob(pattern):
+                if '.venv' not in path.parts:
+                    shutil.rmtree(path, ignore_errors=True)
+        for pattern in (
+            'src/dragonrfc/*.c',
+            'src/dragonrfc/*.cpp',
+            'src/dragonrfc/*.html',
+            'src/dragonrfc/*.so',
+            'src/dragonrfc/*.pyd',
+            '.coverage',
+        ):
+            for path in pathlib.Path('.').glob(pattern):
+                path.unlink()
+        "
+
   check:
     desc: Everything CI runs
     cmds:
